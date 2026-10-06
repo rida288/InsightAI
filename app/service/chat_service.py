@@ -38,7 +38,9 @@ class ChatService:
         self._local = threading.local()
 
         def _get_db():
-            return self._local.db
+            # LangGraph runs tools in a worker thread where self._local.db was never
+            # set, so return None and let the tool open its own session.
+            return getattr(self._local, "db", None)
 
         # LLM client — reused across all requests for this project
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)

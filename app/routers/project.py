@@ -84,6 +84,8 @@ def create_project(
                 _run_ingestion_background, project.id, project.file_path
             )
         return project
+    except HTTPException:
+        raise
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -126,6 +128,8 @@ def get_project_data(
             current_user_id=current_user.id,
             is_admin=is_admin,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -147,6 +151,8 @@ def delete_project(
         # Evict the stale ChatService cache entry for this project
         invalidate_chat_service(project_id)
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail=str(e))

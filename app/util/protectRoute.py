@@ -30,6 +30,11 @@ def get_current_user(
     if payload and payload["user_id"]:
         try: 
             user = UserService(session=session).get_user_by_id(payload["user_id"])
+            if not user.is_approved:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account is suspended or pending admin approval"
+                )
             return UserOutput(
                 id = user.id,
                 first_name = user.first_name,
