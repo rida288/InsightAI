@@ -12,6 +12,10 @@ print("[InsightAI] Loading local embedding model (BAAI/bge-small-en-v1.5)...")
 embedding_model = FastEmbedEmbeddings(
     model_name="BAAI/bge-small-en-v1.5",
     batch_size=16,  # small ONNX batches keep peak memory low
+    # Run inference on the calling thread only. Render's free tier has ~0.1 CPU, so
+    # extra ONNX threads add no speed, and keeping the work on the caller's thread
+    # lets background ingestion run at low priority (see _run_ingestion_background).
+    threads=1,
 )
 print("[InsightAI] Embedding model ready.")
 

@@ -7,7 +7,9 @@ from app.tools.search_tool import get_search_tool
 
 # Google retires Gemini model versions periodically; override with the GEMINI_MODEL
 # env var (e.g. on Render) to switch models without a code change.
-GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-3.8-flash")
+# gemini-3.6-flash measured ~4.5s per full answer; gemini-3.8-flash took ~15s and
+# sometimes hung until Google's own 504. (gemini-3.5-flash is auto-routed to 3.6.)
+GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-3.6-flash")
 
 BASE_SYSTEM_PROMPT = (
     "You are an expert data analytics assistant capable of complex data analysis and statistical reasoning. "
@@ -48,7 +50,16 @@ class ChatService:
             return getattr(self._local, "db", None)
 
         # LLM client — reused across all requests for this project
-        self.llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0)
+        # The client's default of 6 retries with exponential backoff on 429/503 can
+        # silently outlast the route's 45s limit, turning a clear rate-limit or
+        # "high demand" error into a generic timeout. Fail fast so the real error
+        # reaches the user and the logs.
+        self.llm = ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            temperature=0,
+            max_retries=1,
+            timeout=20,
+        )
 
         # Build schema summary so the agent understands the DataFrame structure
         schema_info = get_dataframe_schema(self.file_path)
@@ -82,7 +93,12 @@ class ChatService:
 
             for attempt in range(max_retries):
                 try:
+                    started = time.time()
                     response = self.agent.invoke({"messages": [("human", question)]})
+                    print(
+                        f"[InsightAI] Project {self.project_id}: answered in {time.time() - started:.1f}s "
+                        f"({GEMINI_MODEL}, {len(response['messages'])} messages)"
+                    )
                     raw = response["messages"][-1].content
                     # Gemini can return content as a list of parts (e.g. [{"type": "text", "text": "..."}])
                     if isinstance(raw, list):
@@ -93,10 +109,19 @@ class ChatService:
                     return raw
                 except Exception as e:
                     error_msg = str(e)
+                    print(f"[InsightAI] Project {self.project_id}: chat error on attempt {attempt + 1}: {error_msg[:300]}")
 
                     # Handle Gemini rate limits immediately to prevent server 504 timeouts
                     if "429" in error_msg or "rate limit" in error_msg.lower() or "resource_exhausted" in error_msg.lower():
                         return "Gemini API rate limit reached. Please wait a few seconds before asking your next question."
+
+                    # Gemini overloaded, or our per-call timeout hit
+                    lowered = error_msg.lower()
+                    if "503" in error_msg or "unavailable" in lowered or "high demand" in lowered or "timed out" in lowered or "timeout" in lowered:
+                        return (
+                            f"The AI model ({GEMINI_MODEL}) is busy or responding slowly right now. "
+                            "Please try again in a moment."
+                        )
 
                     # Handle malformed JSON tool calls from the LLM
                     if "Failed to parse tool call" in error_msg or "JSON" in error_msg:

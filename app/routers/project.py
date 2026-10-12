@@ -1,4 +1,7 @@
 import asyncio
+import os
+import threading
+import time
 import traceback
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
@@ -36,13 +39,42 @@ def _run_ingestion_background(project_id: int, file_path: str) -> None:
     Embeds a project's spreadsheet into pgvector.
     Runs in a background task AFTER the HTTP response is already sent,
     so the upload endpoint returns immediately to the user.
+
+    The CPU-heavy work runs on its own short-lived thread at the lowest CPU
+    priority, so on Render's small CPU share chat and page requests are served
+    first. A dedicated thread is used because Linux won't let an unprivileged
+    process raise a thread's priority back up, so lowering one of FastAPI's
+    reused worker threads would permanently slow later requests.
     """
+    threading.Thread(
+        target=_ingest_low_priority,
+        args=(project_id, file_path),
+        name=f"ingest-{project_id}",
+        daemon=True,
+    ).start()
+
+
+def _ingest_low_priority(project_id: int, file_path: str) -> None:
     from app.core.database import SessionLocal
+
+    if hasattr(os, "setpriority"):  # Linux (Render); not available on Windows
+        try:
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)
+        except OSError as e:
+            print(f"[InsightAI] Could not lower ingestion priority (non-fatal): {e!r}")
+
+    db = SessionLocal()
+    try:
+        _ingest(db, project_id, file_path)
+    finally:
+        db.close()
+
+
+def _ingest(db, project_id: int, file_path: str) -> None:
     from app.service.ingestion import IngestionService
     from app.tools.math_tool import _load_dataframe
     from app.core.service_cache import get_cached_chat_service
 
-    db = SessionLocal()
     try:
         print(f"[InsightAI] Starting background ingestion for project {project_id}...")
         # Warm the caches so the first chat is fast. Failure here must not block embedding;
@@ -59,8 +91,6 @@ def _run_ingestion_background(project_id: int, file_path: str) -> None:
         print(f"[InsightAI] Ingestion complete for project {project_id} — {total} rows embedded.")
     except Exception as e:
         print(f"[InsightAI] Ingestion FAILED for project {project_id}: {e}")
-    finally:
-        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -187,10 +217,14 @@ async def chat_with_project(
             raise HTTPException(status_code=403, detail="Not authorized to access this project")
 
         def get_service_and_ask():
+            started = time.time()
             chat_service = get_cached_chat_service(
                 project_id=project_id,
                 file_path=project.file_path,
             )
+            setup = time.time() - started
+            if setup > 1:
+                print(f"[InsightAI] Project {project_id}: chat service setup took {setup:.1f}s")
             return chat_service.ask_question(request.message)
 
         # Run the synchronous agent in a thread pool so it does NOT block
@@ -202,6 +236,7 @@ async def chat_with_project(
                 timeout=45.0,
             )
         except asyncio.TimeoutError:
+            print(f"[InsightAI] Project {project_id}: chat timed out after 45s")
             raise HTTPException(
                 status_code=504,
                 detail="The query timed out. Try a simpler or more specific question.",
