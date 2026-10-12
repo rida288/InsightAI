@@ -5,7 +5,8 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
  * @param {string} endpoint
  * @param {RequestInit} options
  * @param {number} timeoutMs  - Abort the request after this many milliseconds.
- *                              Chat requests use 95s (backend timeout is 90s).
+ *                              Chat requests use 95s (the backend gives up after 45s,
+ *                              so the server's 504 normally arrives first).
  *                              All other requests use the default 15s.
  */
 const request = async (endpoint, options = {}, timeoutMs = 15000) => {
@@ -35,9 +36,24 @@ const request = async (endpoint, options = {}, timeoutMs = 15000) => {
     clearTimeout(timeoutId);
   }
 
-  const data = await response.json();
+  // Proxy errors (e.g. Render's 502/503 pages while the server restarts) are HTML, not JSON
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    if (!response.ok) {
+      throw new Error(`Server unavailable (HTTP ${response.status}). Please try again shortly.`);
+    }
+    throw new Error('Received an invalid response from the server.');
+  }
+
   if (!response.ok) {
-    throw new Error(data.detail || 'Something went wrong');
+    const detail = data?.detail;
+    // FastAPI validation errors (422) return detail as an array of { msg, ... }
+    const message = Array.isArray(detail)
+      ? detail.map((d) => d.msg).join('; ')
+      : detail;
+    throw new Error(message || 'Something went wrong');
   }
   return data;
 };
@@ -83,7 +99,7 @@ export const api = {
   getProjectData: (projectId) => request(`/projects/${projectId}/data`, { method: 'GET' }),
   deleteProject: (projectId) => request(`/projects/${projectId}`, { method: 'DELETE' }),
 
-  // Chat uses a longer timeout — the backend allows up to 90s for complex queries.
+  // Chat uses a longer timeout than other requests; the backend itself stops at 45s.
   chatWithProject: (projectId, message) =>
     request(
       `/projects/${projectId}/chat`,

@@ -12,6 +12,7 @@ class Project(Base):
     file_name = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    # Naive UTC, matching the existing timezone-less column (utcnow() is deprecated)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC).replace(tzinfo=None))
 
     owner = relationship("User")

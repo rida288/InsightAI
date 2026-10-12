@@ -1,8 +1,13 @@
 import threading
+from decouple import config
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 from app.tools.math_tool import get_math_tool, get_dataframe_schema
 from app.tools.search_tool import get_search_tool
+
+# Google retires Gemini model versions periodically; override with the GEMINI_MODEL
+# env var (e.g. on Render) to switch models without a code change.
+GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-3.8-flash")
 
 BASE_SYSTEM_PROMPT = (
     "You are an expert data analytics assistant capable of complex data analysis and statistical reasoning. "
@@ -43,7 +48,7 @@ class ChatService:
             return getattr(self._local, "db", None)
 
         # LLM client — reused across all requests for this project
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+        self.llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0)
 
         # Build schema summary so the agent understands the DataFrame structure
         schema_info = get_dataframe_schema(self.file_path)

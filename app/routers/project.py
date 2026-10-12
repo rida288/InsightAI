@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -44,8 +45,13 @@ def _run_ingestion_background(project_id: int, file_path: str) -> None:
     db = SessionLocal()
     try:
         print(f"[InsightAI] Starting background ingestion for project {project_id}...")
-        _load_dataframe(file_path)
-        get_cached_chat_service(project_id=project_id, file_path=file_path)
+        # Warm the caches so the first chat is fast. Failure here must not block embedding;
+        # the chat route will retry building the service on demand.
+        try:
+            _load_dataframe(file_path)
+            get_cached_chat_service(project_id=project_id, file_path=file_path)
+        except Exception as e:
+            print(f"[InsightAI] Cache warm-up failed for project {project_id} (non-fatal): {e!r}")
         total = IngestionService(db=db).process_and_embed_project_data(
             project_id=project_id,
             file_path=file_path,
@@ -86,9 +92,9 @@ def create_project(
         return project
     except HTTPException:
         raise
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @projectRouter.get("", response_model=List[ProjectOutput])
@@ -98,9 +104,9 @@ def get_user_projects(
 ):
     try:
         return ProjectService(session=session).get_projects_by_owner(owner_id=current_user.id)
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @projectRouter.get("/all", response_model=List[ProjectOutput])
@@ -110,9 +116,9 @@ def get_all_projects(
 ):
     try:
         return ProjectService(session=session).get_all_projects()
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @projectRouter.get("/{project_id}/data")
@@ -130,9 +136,9 @@ def get_project_data(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @projectRouter.delete("/{project_id}")
@@ -153,9 +159,9 @@ def delete_project(
         return result
     except HTTPException:
         raise
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 class ChatRequest(BaseModel):
@@ -204,6 +210,6 @@ async def chat_with_project(
         return {"answer": answer}
     except HTTPException:
         raise
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")

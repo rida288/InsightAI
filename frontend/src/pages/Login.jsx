@@ -24,7 +24,7 @@ export default function Login() {
         const decoded = jwtDecode(token);
         localStorage.setItem('role', decoded.role || 'User');
         navigate('/dashboard');
-      } catch (err) {
+      } catch {
         setError('Failed to verify user details.');
       }
     } catch (err) {

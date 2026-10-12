@@ -56,6 +56,8 @@ class UserRepository(BaseRepository):
             user.last_name = data.last_name
         if data.email is not None:
             user.email = data.email
+        if data.password:
+            user.password = data.password  # already hashed by UserService
         self.session.commit()
         self.session.refresh(instance=user)
         return user

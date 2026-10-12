@@ -132,5 +132,7 @@ class ProjectService:
             # Store in cache with current timestamp
             _project_data_cache[project_id] = (_time.time(), result)
             return result
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error parsing file: {str(e)}")

@@ -20,28 +20,12 @@ def get_search_tool(db_getter: Callable, project_id: int):
         if not actual_query:
             return "Error: Please provide a query or question."
             
-        # Embed the query with a robust retry loop (network API may be flaky)
-        import time
-        import concurrent.futures
-        query_embedding = None
-        for attempt in range(3):
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(embedding_model.embed_query, actual_query)
-                    query_embedding = future.result(timeout=12.0)
-                break
-            except concurrent.futures.TimeoutError:
-                print(f"[InsightAI] HuggingFace API timeout on search attempt {attempt+1}, retrying...")
-                time.sleep(1)
-            except Exception as e:
-                if attempt == 2:
-                    return f"Error: Failed to generate query embedding after 3 attempts: {e}"
-                print(f"[InsightAI] HuggingFace API network error on search, retrying... ({e})")
-                time.sleep(1)
-                
-        if query_embedding is None:
-            return "Error: Failed to generate query embedding due to network timeout."
-        
+        # The embedding model runs locally, so there is no network call to retry
+        try:
+            query_embedding = embedding_model.embed_query(actual_query)
+        except Exception as e:
+            return f"Error: Failed to generate query embedding: {e}"
+
         # Open a fresh DB session or use thread-local if available
         from app.core.database import SessionLocal
         db = db_getter() if db_getter and db_getter() is not None else SessionLocal()

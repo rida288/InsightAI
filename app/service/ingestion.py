@@ -1,18 +1,19 @@
 import pandas as pd
-from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from app.db.models.project_embedding import ProjectEmbedding
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-import os
+from langchain_community.embeddings import FastEmbedEmbeddings
 
-# We MUST use the Inference API because loading the model locally 
-# causes Render's 512MB free tier to run out of memory (OOMKilled).
-print("[InsightAI] Initializing remote embedding API (BAAI/bge-small-en-v1.5)...")
-embedding_model = HuggingFaceInferenceAPIEmbeddings(
-    api_key=os.environ.get("HUGGINGFACEHUB_API_TOKEN", ""),
-    model_name="BAAI/bge-small-en-v1.5"
+# Runs BAAI/bge-small-en-v1.5 locally via ONNX (fastembed), so there is no API quota
+# or per-request cost. It is a quantized ONNX model, not PyTorch: measured ~170MB RAM
+# loaded, ~240MB at peak while embedding, which fits Render's 512MB free tier.
+# Produces 384-dim vectors to match ProjectEmbedding.embedding (Vector(384)).
+# The model (~67MB) is downloaded from the HuggingFace Hub on first load.
+print("[InsightAI] Loading local embedding model (BAAI/bge-small-en-v1.5)...")
+embedding_model = FastEmbedEmbeddings(
+    model_name="BAAI/bge-small-en-v1.5",
+    batch_size=16,  # small ONNX batches keep peak memory low
 )
-print("[InsightAI] Embedding API ready.")
+print("[InsightAI] Embedding model ready.")
 
 class IngestionService:
     def __init__(self, db: Session):
@@ -35,12 +36,12 @@ class IngestionService:
         """
         from app.core.storage.s3_client import S3Client
         import io
-        
+
         # Get file stream from B2
         s3_client = S3Client()
         file_stream = s3_client.get_file_stream(file_path)
         file_buffer = io.BytesIO(file_stream.read())
-        
+
         # Determine file type and read
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_buffer)
@@ -48,71 +49,42 @@ class IngestionService:
             df = pd.read_excel(file_buffer)
         else:
             raise ValueError("Unsupported file format for ingestion")
-        
+
         # Clean dataframe
         df = df.dropna(how='all')
-        
+
         texts_to_embed = []
         row_indices = []
-        
+
         # Iterate over dataframe
         for idx, row in df.iterrows():
             content = self.extract_text_content(row)
             if content.strip():
                 texts_to_embed.append(content)
                 row_indices.append(idx)
-        
-        import concurrent.futures
-        
-        # Prepare all batches
-        batches = []
+
         total_rows = len(texts_to_embed)
-        for i in range(0, total_rows, batch_size):
+        total_batches = (total_rows + batch_size - 1) // batch_size
+        print(f"[InsightAI] Embedding {total_rows} rows in {total_batches} batches...")
+
+        # Embed and save one batch at a time. The model runs on the local CPU, so
+        # parallel batches would only add memory, and committing per batch keeps
+        # progress if a later batch fails.
+        for b, i in enumerate(range(0, total_rows, batch_size), start=1):
             batch_texts = texts_to_embed[i:i + batch_size]
             batch_indices = row_indices[i:i + batch_size]
-            batches.append((batch_texts, batch_indices))
-            
-        def embed_batch(batch):
-            batch_texts, batch_indices = batch
-            import time
-            import concurrent.futures
-            for attempt in range(5):
-                try:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(embedding_model.embed_documents, batch_texts)
-                        embeddings = future.result(timeout=15.0)
-                    return batch_texts, batch_indices, embeddings
-                except concurrent.futures.TimeoutError:
-                    print(f"[InsightAI] HuggingFace API timeout on ingestion attempt {attempt+1}, retrying...")
-                    time.sleep(3)
-                except Exception as e:
-                    if attempt == 4:
-                        raise e
-                    print(f"[InsightAI] HuggingFace API network error, retrying... ({e})")
-                    time.sleep(3)
-            return None
-            
-        # Execute embeddings in parallel (HuggingFace API allows some concurrency)
-        print(f"[InsightAI] Embedding {len(batches)} batches concurrently...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            # map preserves the order of results
-            results = list(executor.map(embed_batch, batches))
-            
-        # Save to DB sequentially to avoid locking issues
-        for result in results:
-            if result:
-                batch_texts, batch_indices, embeddings = result
-                db_embeddings = []
-                for j in range(len(batch_texts)):
-                    db_emb = ProjectEmbedding(
-                        project_id=project_id,
-                        row_index=batch_indices[j],
-                        content=batch_texts[j],
-                        embedding=embeddings[j]
-                    )
-                    db_embeddings.append(db_emb)
-                
-                self.db.bulk_save_objects(db_embeddings)
-                self.db.commit()
-            
+            embeddings = embedding_model.embed_documents(batch_texts)
+
+            self.db.bulk_save_objects([
+                ProjectEmbedding(
+                    project_id=project_id,
+                    row_index=row_index,
+                    content=text,
+                    embedding=embedding,
+                )
+                for row_index, text, embedding in zip(batch_indices, batch_texts, embeddings)
+            ])
+            self.db.commit()
+            print(f"[InsightAI] Project {project_id}: embedded batch {b}/{total_batches}")
+
         return total_rows

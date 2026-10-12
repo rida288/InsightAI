@@ -9,7 +9,10 @@ if TYPE_CHECKING:
 # agent on every single chat request — only the DB-session-dependent search
 # tool is rebuilt per request (inside ask_question).
 _chat_service_cache: Dict[int, "ChatService"] = {}
+# _cache_lock only guards the dicts; each project gets its own build lock so a slow
+# first build (S3 download + agent compile) doesn't block other projects.
 _cache_lock = threading.Lock()
+_build_locks: Dict[int, threading.Lock] = {}
 
 
 def get_cached_chat_service(project_id: int, file_path: str) -> "ChatService":
@@ -18,14 +21,24 @@ def get_cached_chat_service(project_id: int, file_path: str) -> "ChatService":
     and reusing it for all subsequent requests to the same project.
     """
     with _cache_lock:
-        if project_id not in _chat_service_cache:
-            from app.service.chat_service import ChatService
-            print(f"[InsightAI] Building ChatService for project {project_id} (first request)...")
-            _chat_service_cache[project_id] = ChatService(
-                project_id=project_id,
-                file_path=file_path,
-            )
-        return _chat_service_cache[project_id]
+        service = _chat_service_cache.get(project_id)
+        if service is not None:
+            return service
+        build_lock = _build_locks.setdefault(project_id, threading.Lock())
+
+    with build_lock:
+        # Another request may have finished building while we waited
+        with _cache_lock:
+            service = _chat_service_cache.get(project_id)
+        if service is not None:
+            return service
+
+        from app.service.chat_service import ChatService
+        print(f"[InsightAI] Building ChatService for project {project_id} (first request)...")
+        service = ChatService(project_id=project_id, file_path=file_path)
+        with _cache_lock:
+            _chat_service_cache[project_id] = service
+        return service
 
 
 def invalidate_chat_service(project_id: int) -> None:
@@ -35,5 +48,6 @@ def invalidate_chat_service(project_id: int) -> None:
     """
     with _cache_lock:
         removed = _chat_service_cache.pop(project_id, None)
+        _build_locks.pop(project_id, None)
         if removed:
             print(f"[InsightAI] Evicted ChatService cache for deleted project {project_id}")

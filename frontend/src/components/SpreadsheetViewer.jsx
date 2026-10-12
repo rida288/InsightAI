@@ -85,7 +85,11 @@ export default function SpreadsheetViewer({ project, onClose }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const currentSheet = data.sheets && data.sheets.length > 0 ? data.sheets[activeSheetIndex] : { headers: [], rows: [] };
+  // Memoized so hooks below only re-run when the data or active sheet actually changes
+  const currentSheet = useMemo(
+    () => (data.sheets && data.sheets.length > 0 ? data.sheets[activeSheetIndex] : { headers: [], rows: [] }),
+    [data, activeSheetIndex]
+  );
 
   // Compute unique values for each column for the Excel filters
   const uniqueColumnValues = useMemo(() => {
@@ -217,7 +221,7 @@ export default function SpreadsheetViewer({ project, onClose }) {
     }
 
     return rows;
-  }, [data, searchTerm, sortConfig, activeFilters]);
+  }, [currentSheet, searchTerm, sortConfig, activeFilters]);
 
   // Pagination calculation
   const totalPages = Math.ceil(processedRows.length / rowsPerPage) || 1;

@@ -10,7 +10,7 @@ class ProjectEmbedding(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     row_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    # Using 384 dimensions for all-MiniLM-L6-v2 embeddings
+    # 384 dimensions for BAAI/bge-small-en-v1.5 embeddings (see app/service/ingestion.py)
     embedding = Column(Vector(384))
 
     project = relationship("Project")

@@ -74,7 +74,7 @@ def suspend_user(
     admin_user: UserOutput = Depends(get_current_admin)
 ):
     try:
-        return UserService(session=session).suspend_user(user_id=user_id)
+        return UserService(session=session).suspend_user(user_id=user_id, acting_admin_id=admin_user.id)
     except Exception as e:
         print(e)
         raise e
@@ -86,7 +86,7 @@ def delete_user(
     admin_user: UserOutput = Depends(get_current_admin)
 ):
     try:
-        return UserService(session=session).delete_user(user_id=user_id)
+        return UserService(session=session).delete_user(user_id=user_id, acting_admin_id=admin_user.id)
     except Exception as e:
         print(e)
         raise e

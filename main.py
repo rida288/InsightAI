@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from fastapi import FastAPI, Depends
 from contextlib import asynccontextmanager
 from app.util.init_db import create_tables
@@ -12,16 +13,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 async def _prewarm_embedding_model():
     """
-    Fires a dummy embed_query call immediately on startup so the HuggingFace
-    Inference API loads the model into memory before the first real user request.
-    Without this, the first chat query pays a 20-40s cold-start penalty that
-    (combined with other latency) pushes past Render's 57s proxy timeout.
-    Non-fatal: if HuggingFace is unavailable, the server still starts normally.
+    Loads the local embedding model (downloading it on a fresh deploy) and runs
+    one embed_query on startup, so the first upload or chat doesn't pay that cost
+    and a broken embedding setup shows up in the deploy logs immediately.
+    Non-fatal: if the model fails to load, the server still starts normally.
     """
     try:
         from app.service.ingestion import embedding_model
         await asyncio.to_thread(embedding_model.embed_query, "warmup")
-        print("[InsightAI] HuggingFace embedding model pre-warmed successfully.")
+        print("[InsightAI] Embedding model pre-warmed successfully.")
     except Exception as e:
         print(f"[InsightAI] Embedding pre-warm failed (non-fatal): {e}")
 
@@ -30,7 +30,7 @@ async def _prewarm_embedding_model():
 async def lifespan(app: FastAPI):
     # Initialize DB tables and HNSW index
     create_tables()
-    # Fire-and-forget: warm up the HuggingFace model in the background while
+    # Fire-and-forget: load the embedding model in the background while
     # the server is already accepting health-check pings from Render/UptimeRobot.
     asyncio.create_task(_prewarm_embedding_model())
     yield
@@ -53,10 +53,13 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    print(f"[InsightAI] Unhandled Server Error: {exc}")
+    # Full details go to the server log only; clients get a generic message so
+    # SQL errors, file paths and config details are never exposed.
+    print(f"[InsightAI] Unhandled Server Error on {request.method} {request.url.path}:")
+    traceback.print_exception(exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal Server Error: {str(exc)}"},
+        content={"detail": "Internal Server Error"},
     )
 
 app.include_router(authRouter, tags=["auth"], prefix="/auth")

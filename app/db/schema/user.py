@@ -1,5 +1,5 @@
 from pydantic import EmailStr, BaseModel
-from typing import Union 
+from typing import Union, Literal
 
 #what we expect in signup
 class UserInCreate(BaseModel):
@@ -14,7 +14,7 @@ class UserAdminCreate(BaseModel):
     last_name: str
     email: EmailStr
     password: str
-    role: str = "User"
+    role: Literal["User", "Admin"] = "User"
     
 class UserOutput(BaseModel):
     id: int 
